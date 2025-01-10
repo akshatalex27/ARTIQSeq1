@@ -24,9 +24,10 @@ class FullExperimentSequence14(EnvExperiment):  # Optimized for higher frequency
         self.setattr_device("urukul0_ch3")  # Optical pumping/excitation DDS
 
         # Preallocate NumPy arrays for timestamps
-        self.num_cycles = 100
-        self.repetitions_per_cycle = 50
-        self.total_reps = self.num_cycles * self.repetitions_per_cycle
+        self.num_big_cycles = 2  # Main Cycle with MOT and Atom
+        self.num_cycles = 2      # Inner Cycle with Cooling
+        self.repetitions_per_cycle = 50   #Optical Pumping, excitation and photon detection cycle
+        self.total_reps = self.num_big_cycles * self.num_cycles * self.repetitions_per_cycle
 
         # Initialize timestamp arrays with zeros
         self.time_tags_0 = np.zeros(self.total_reps, dtype=np.int64)
@@ -68,104 +69,118 @@ class FullExperimentSequence14(EnvExperiment):  # Optimized for higher frequency
         self.ttl1.input()
         self.ttl7.output()
 
-        # ----------------------------------------------------------------------
-        # 1) Load MOT (only once at the beginning)
-        # ----------------------------------------------------------------------
-        self.core.break_realtime()
-        self.ttl4.on()
-        self.ttl5.on()
-        self.ttl6.on()
-
-        self.urukul0_ch0.set(100 * MHz)
-        self.urukul0_ch0.set_amplitude(0.8)
-        self.urukul0_ch0.sw.on()
-
-        self.urukul0_ch1.set(80 * MHz)
-        self.urukul0_ch1.set_amplitude(0.5)
-        self.urukul0_ch1.sw.on()
-
-        delay(mot_load_time)
-
-        # Turn off MOT beams and coils
-        self.urukul0_ch0.sw.off()
-        self.urukul0_ch1.sw.off()
-        self.ttl4.off()
-        self.ttl5.off()
-        self.ttl6.off()
-
-        # ----------------------------------------------------------------------
-        # 2) Load Atom (once at the beginning)
-        # ----------------------------------------------------------------------
-        self.urukul0_ch2.set(120 * MHz)
-        self.urukul0_ch2.set_amplitude(0.7)
-        self.urukul0_ch2.sw.on()
-        delay(atom_load_time)
-        self.urukul0_ch2.sw.off()
-
-        # ----------------------------------------------------------------------
-        # 3) Configure urukul0_ch3 once before the loop
-        # ----------------------------------------------------------------------
-        self.urukul0_ch3.set(90 * MHz)
-        self.urukul0_ch3.set_amplitude(0.6)
-        self.urukul0_ch3.sw.on()
-
-        # ----------------------------------------------------------------------
-        # 4) Now loop over cycles (10 times)
-        # ----------------------------------------------------------------------
+        # Initialize repetition index
         rep_index = 0  # Initialize repetition index
 
-        for cycle_idx in range(self.num_cycles):
-            for rep_idx in range(self.repetitions_per_cycle):
-                # Optical Pumping using sw.pulse()
-                delay(5 * us)
-                self.urukul0_ch3.sw.pulse(optical_pump_time)
-                delay(small_delay)  # Allow switch recovery
+        for big_cycle_idx in range(self.num_big_cycles):
+            # ----------------------------------------------------------------------
+            # Big Cycle {big_cycle_idx + 1}/{self.num_big_cycles}
+            # Includes: Load MOT, Load Atom, Configure urukul0_ch3, and inner cycles
+            # ----------------------------------------------------------------------
 
-                # Excitation using sw.pulse()
-                self.urukul0_ch3.sw.pulse(excitation_time)
-                delay(small_delay)  # Allow switch recovery
-
-                # Send TTL7 pulse & detect on ttl0 and ttl1
-                with sequential:
-                    # Pulse on ttl7
-                    self.ttl7.pulse(pulse_width)
-                    with parallel:
-                        # Gate on ttl0 and ttl1
-                        tend0 = self.ttl0.gate_rising(gate_rising_time)
-                        tend1 = self.ttl1.gate_rising(gate_rising_time)
-                # Read timestamps in machine units
-                ttl_time0 = self.ttl0.timestamp_mu(tend0)
-                ttl_time1 = self.ttl1.timestamp_mu(tend1)
-
-                # Store the time tags in preallocated arrays
-                self.time_tags_0[rep_index] = ttl_time0
-                self.time_tags_1[rep_index] = ttl_time1
-
-                rep_index += 1  # Increment repetition index
-
-            # ------------------------------------------------------------------
-            # 5) After repetitions_per_cycle reps, do a short "cooling" before next cycle
-            # ------------------------------------------------------------------
+            # -------------------------------
+            # 1) Load MOT (once per big cycle)
+            # -------------------------------
             self.core.break_realtime()
+            self.ttl4.on()
+            self.ttl5.on()
+            self.ttl6.on()
 
-            self.urukul0_ch0.set(50 * MHz)
-            self.urukul0_ch0.set_amplitude(0.5)
+            self.urukul0_ch0.set(100 * MHz)
+            self.urukul0_ch0.set_amplitude(0.8)
             self.urukul0_ch0.sw.on()
 
-            self.urukul0_ch1.set(60 * MHz)
+            self.urukul0_ch1.set(80 * MHz)
             self.urukul0_ch1.set_amplitude(0.5)
             self.urukul0_ch1.sw.on()
 
-            # Short re-cooling time
-            # delay(100 * us)
+            delay(mot_load_time)
 
+            # Turn off MOT beams and coils
             self.urukul0_ch0.sw.off()
             self.urukul0_ch1.sw.off()
+            self.ttl4.off()
+            self.ttl5.off()
+            self.ttl6.off()
+
+            # -------------------------------
+            # 2) Load Atom (once per big cycle)
+            # -------------------------------
+            self.urukul0_ch2.set(120 * MHz)
+            self.urukul0_ch2.set_amplitude(0.7)
+            self.urukul0_ch2.sw.on()
+            delay(atom_load_time)
+            self.urukul0_ch2.sw.off()
+
+            # -------------------------------
+            # 3) Configure urukul0_ch3 (once per big cycle)
+            # -------------------------------
+            self.urukul0_ch3.set(90 * MHz)
+            self.urukul0_ch3.set_amplitude(0.6)
+            self.urukul0_ch3.sw.on()
+
+            # ----------------------------------------------------------------------
+            # 4) Loop over inner cycles within the big cycle
+            # ----------------------------------------------------------------------
+            for cycle_idx in range(self.num_cycles):
+                for rep in range(self.repetitions_per_cycle):
+                    # Optical Pumping using sw.pulse()
+                    delay(5 * us)
+                    self.urukul0_ch3.sw.pulse(optical_pump_time)
+                    delay(small_delay)  # Allow switch recovery
+
+                    # Excitation using sw.pulse()
+                    self.urukul0_ch3.sw.pulse(excitation_time)
+                    delay(small_delay)  # Allow switch recovery
+
+                    # Send TTL7 pulse & detect on ttl0 and ttl1
+                    with sequential:
+                        # Pulse on ttl7
+                        self.ttl7.pulse(pulse_width)
+                        with parallel:
+                            # Gate on ttl0 and ttl1
+                            tend0 = self.ttl0.gate_rising(gate_rising_time)
+                            tend1 = self.ttl1.gate_rising(gate_rising_time)
+                    # Read timestamps in machine units
+                    ttl_time0 = self.ttl0.timestamp_mu(tend0)
+                    ttl_time1 = self.ttl1.timestamp_mu(tend1)
+
+                    # Store the time tags in preallocated arrays
+                    self.time_tags_0[rep_index] = ttl_time0
+                    self.time_tags_1[rep_index] = ttl_time1
+
+                    rep_index += 1  # Increment repetition index
+
+                # ------------------------------------------------------------------
+                # After repetitions_per_cycle reps, do a short "cooling" before next cycle
+                # ------------------------------------------------------------------
+                delay(12 * us)
+
+                self.urukul0_ch0.set(50 * MHz)
+                self.urukul0_ch0.set_amplitude(0.5)
+                self.urukul0_ch0.sw.on()
+                delay(12 * us)
+
+                self.urukul0_ch1.set(60 * MHz)
+                self.urukul0_ch1.set_amplitude(0.5)
+                self.urukul0_ch1.sw.on()
+                # delay(10 * us)
+
+                # Short re-cooling time
+                # delay(100 * us)
+
+                self.urukul0_ch0.sw.off()
+                self.urukul0_ch1.sw.off()
+                # delay(10 * us)
+
+            # ----------------------------------------------------------------------
+            # 5) Done with all inner cycles in this big cycle: signal completion
+            # ----------------------------------------------------------------------
+            self.core.break_realtime()
 
         # ----------------------------------------------------------------------
-        # 6) Done with all cycles: signal completion
+        # End of all big cycles
         # ----------------------------------------------------------------------
-        self.core.break_realtime()
 
     def analyze(self):
         """Retrieve timestamp arrays and write to CSV."""
