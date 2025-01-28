@@ -2,7 +2,11 @@ from artiq.experiment import *
 import numpy as np
 import time
 
-class FullExperimentSequence17(EnvExperiment):
+# We add these two imports for handling the HDF5 file.
+import h5py
+import datetime
+
+class FullExperimentSequence17(EnvExperiment):   # atom-photon entanglement sequence
     def build(self):
         # Core device
         self.setattr_device("core")
@@ -26,19 +30,14 @@ class FullExperimentSequence17(EnvExperiment):
         # ------------------------------------------------------------------
         # Chunking parameters
         # ------------------------------------------------------------------
-        self.num_big_cycles_chunk = 2500
-        self.num_chunks = 1
+        self.num_big_cycles_chunk = 20
+        self.num_chunks = 3  # example: do 3 chunks
 
         # ------------------------------------------------------------------
         # Inner-sequence parameters
         # ------------------------------------------------------------------
         self.num_cooling_cycles = 100
         self.attempts_per_cooling = 50
-
-        # Worst-case capacity for arrays
-        self.max_detected_photons_per_chunk = (
-            self.num_big_cycles_chunk * self.num_cooling_cycles * self.attempts_per_cooling
-        )
 
     # ------------------------------------------------------------------
     # RPC calls to retrieve arrays from the core device
@@ -75,7 +74,7 @@ class FullExperimentSequence17(EnvExperiment):
     @rpc
     def host_mot_load_wait(self, seconds):
         """
-        Wait on the host side for `seconds` (using time.sleep).
+        Wait on the host side for seconds (using time.sleep).
         """
         time.sleep(seconds)
 
@@ -123,6 +122,7 @@ class FullExperimentSequence17(EnvExperiment):
         # -----------------------------------------------------
         # MAIN LOOP: run N = self.num_big_cycles_chunk big cycles
         # -----------------------------------------------------
+
         for big_cycle_idx in range(self.num_big_cycles_chunk):
 
             # 1) Turn on MOT beams & coils
@@ -165,7 +165,6 @@ class FullExperimentSequence17(EnvExperiment):
             self.urukul0_ch3.set_amplitude(0.6)
             self.urukul0_ch3.sw.on()
 
-            # Start cooling cycles
             photon_detected_this_cycle = False
             for cycle_idx in range(self.num_cooling_cycles):
 
@@ -255,56 +254,88 @@ class FullExperimentSequence17(EnvExperiment):
     def run(self):
         """
         We run 'num_chunks' chunks. Each chunk has 'num_big_cycles_chunk' big cycles.
-        After each chunk, we retrieve arrays and store them.
+        After each chunk, we retrieve arrays, store them in the dataset manager
+        (for live display), and also store them in an HDF5 file, flushing so that
+        partial data is preserved if the experiment is stopped.
         """
-        for chunk_idx in range(self.num_chunks):
-            # Worst-case safe upper bound
-            chunk_max = 6 * self.num_big_cycles_chunk
+        # Create a unique filename for our HDF5 file
+        timestamp_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"atom_photon_data_{timestamp_str}.h5"
 
-            # Create arrays on the host
-            self.ttl0_detected_times = np.zeros(chunk_max, dtype=np.int64)
-            self.ttl0_detected_attempts = np.zeros(chunk_max, dtype=np.int64)
-            self.ttl1_detected_times = np.zeros(chunk_max, dtype=np.int64)
-            self.ttl1_detected_attempts = np.zeros(chunk_max, dtype=np.int64)
-            self.atom_tomo_times = np.zeros(chunk_max, dtype=np.int64)
-            self.atom_tomo_attempts = np.zeros(chunk_max, dtype=np.int64)
+        # Open the HDF5 file in write mode
+        self.h5file = h5py.File(filename, "w")
 
-            # Run the kernel for this chunk
-            (ttl0_count,
-             ttl1_count,
-             tomo_count) = self.run_chunk_experiment(chunk_idx)
+        # We put our main logic in a try/finally so that
+        # if the experiment is terminated, we still close the file gracefully.
+        try:
+            for chunk_idx in range(self.num_chunks):
+                # For each chunk, define arrays on the host side that we will use in the kernel.
+                # (We use an over-estimated size just to ensure no out-of-bounds in kernel.)
+                chunk_max = 6 * self.num_big_cycles_chunk
+                self.ttl0_detected_times = np.zeros(chunk_max, dtype=np.int64)
+                self.ttl0_detected_attempts = np.zeros(chunk_max, dtype=np.int64)
+                self.ttl1_detected_times = np.zeros(chunk_max, dtype=np.int64)
+                self.ttl1_detected_attempts = np.zeros(chunk_max, dtype=np.int64)
+                self.atom_tomo_times = np.zeros(chunk_max, dtype=np.int64)
+                self.atom_tomo_attempts = np.zeros(chunk_max, dtype=np.int64)
 
-            # Retrieve arrays (host side)
-            (ttl0_detected_times_raw,
-             ttl0_detected_attempts_raw) = self.retrieve_ttl0_detections()
-            (ttl1_detected_times_raw,
-             ttl1_detected_attempts_raw) = self.retrieve_ttl1_detections()
-            (tomo_times_raw,
-             tomo_attempts_raw) = self.retrieve_atom_tomo_data()
+                # Run the kernel for this chunk
+                (ttl0_count,
+                 ttl1_count,
+                 tomo_count) = self.run_chunk_experiment(chunk_idx)
 
-            # Slice arrays to valid used length
-            used_ttl0_times = ttl0_detected_times_raw[:ttl0_count]
-            used_ttl0_attempts = ttl0_detected_attempts_raw[:ttl0_count]
-            used_ttl1_times = ttl1_detected_times_raw[:ttl1_count]
-            used_ttl1_attempts = ttl1_detected_attempts_raw[:ttl1_count]
-            used_tomo_times = tomo_times_raw[:tomo_count]
-            used_tomo_attempts = tomo_attempts_raw[:tomo_count]
+                # Retrieve arrays (host side)
+                (ttl0_detected_times_raw,
+                 ttl0_detected_attempts_raw) = self.retrieve_ttl0_detections()
+                (ttl1_detected_times_raw,
+                 ttl1_detected_attempts_raw) = self.retrieve_ttl1_detections()
+                (tomo_times_raw,
+                 tomo_attempts_raw) = self.retrieve_atom_tomo_data()
 
-            # Store in ARTIQ dataset manager
-            self.set_dataset(f"ttl0_detected_times_chunk_{chunk_idx}",
-                             used_ttl0_times, broadcast=True)
-            self.set_dataset(f"ttl0_detected_attempts_chunk_{chunk_idx}",
-                             used_ttl0_attempts, broadcast=True)
+                # Slice arrays to valid used length
+                used_ttl0_times = ttl0_detected_times_raw[:ttl0_count]
+                used_ttl0_attempts = ttl0_detected_attempts_raw[:ttl0_count]
+                used_ttl1_times = ttl1_detected_times_raw[:ttl1_count]
+                used_ttl1_attempts = ttl1_detected_attempts_raw[:ttl1_count]
+                used_tomo_times = tomo_times_raw[:tomo_count]
+                used_tomo_attempts = tomo_attempts_raw[:tomo_count]
 
-            self.set_dataset(f"ttl1_detected_times_chunk_{chunk_idx}",
-                             used_ttl1_times, broadcast=True)
-            self.set_dataset(f"ttl1_detected_attempts_chunk_{chunk_idx}",
-                             used_ttl1_attempts, broadcast=True)
+                # -----------------------------------------------------------
+                # 1) Store to ARTIQ dataset manager (for real-time plotting)
+                # -----------------------------------------------------------
+                self.set_dataset(f"ttl0_detected_times_chunk_{chunk_idx}",
+                                 used_ttl0_times, broadcast=True)
+                self.set_dataset(f"ttl0_detected_attempts_chunk_{chunk_idx}",
+                                 used_ttl0_attempts, broadcast=True)
+                self.set_dataset(f"ttl1_detected_times_chunk_{chunk_idx}",
+                                 used_ttl1_times, broadcast=True)
+                self.set_dataset(f"ttl1_detected_attempts_chunk_{chunk_idx}",
+                                 used_ttl1_attempts, broadcast=True)
+                self.set_dataset(f"atom_tomo_times_chunk_{chunk_idx}",
+                                 used_tomo_times, broadcast=True)
+                self.set_dataset(f"atom_tomo_attempts_chunk_{chunk_idx}",
+                                 used_tomo_attempts, broadcast=True)
 
-            self.set_dataset(f"atom_tomo_times_chunk_{chunk_idx}",
-                             used_tomo_times, broadcast=True)
-            self.set_dataset(f"atom_tomo_attempts_chunk_{chunk_idx}",
-                             used_tomo_attempts, broadcast=True)
+                # -----------------------------------------------------------
+                # 2) Store to our *own* HDF5 file
+                # -----------------------------------------------------------
+                g = self.h5file.create_group(f"chunk_{chunk_idx}")
+                g.create_dataset("ttl0_times", data=used_ttl0_times)
+                g.create_dataset("ttl0_attempts", data=used_ttl0_attempts)
+                g.create_dataset("ttl1_times", data=used_ttl1_times)
+                g.create_dataset("ttl1_attempts", data=used_ttl1_attempts)
+                g.create_dataset("tomo_times", data=used_tomo_times)
+                g.create_dataset("tomo_attempts", data=used_tomo_attempts)
+
+                # Flush to disk so if we terminate now, chunk data is not lost.
+                self.h5file.flush()
+
+        finally:
+            # If the experiment is forcibly terminated (Dashboard -> cancel),
+            # ARTIQ raises a termination exception. The `finally` block ensures
+            # we close the file gracefully, leaving it in a valid state.
+            self.h5file.close()
+            # print(f"*** HDF5 file '{filename}' closed. Partial data is safe. ***")
 
     # ------------------------------------------------------------------
     # Optionally analyze or combine chunked data
