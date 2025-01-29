@@ -31,7 +31,7 @@ class FullExperimentSequence17(EnvExperiment):   # atom-photon entanglement sequ
         # Chunking parameters
         # ------------------------------------------------------------------
         self.num_big_cycles_chunk = 20
-        self.num_chunks = 3  # example: do 3 chunks
+        self.num_chunks = 1  # example: do 3 chunks
 
         # ------------------------------------------------------------------
         # Inner-sequence parameters
@@ -210,7 +210,7 @@ class FullExperimentSequence17(EnvExperiment):   # atom-photon entanglement sequ
                         tomo_count += 1
 
                         # 10 ms tomography pulse on ttl4
-                        delay(3 * us)
+                        delay(3 * us) #min delay required
                         self.ttl4.on()
                         delay(10 * ms)
                         self.ttl4.off()
