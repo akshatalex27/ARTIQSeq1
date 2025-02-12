@@ -2,7 +2,7 @@ from artiq.experiment import *
 import numpy as np
 import time
 
-class FullExperimentSequence21(EnvExperiment):
+class FullExperimentSequence21(EnvExperiment):    #single photon count sequence
     def build(self):
         # Core device
         self.setattr_device("core")
@@ -26,7 +26,7 @@ class FullExperimentSequence21(EnvExperiment):
         # ------------------------------------------------------------------
         # Chunking parameters
         # ------------------------------------------------------------------
-        self.num_big_cycles_chunk = 80
+        self.num_big_cycles_chunk = 20
         self.num_chunks = 1
 
         # ------------------------------------------------------------------
@@ -234,7 +234,7 @@ class FullExperimentSequence21(EnvExperiment):
             # We allocate arrays on the host side for storing detection events
             # Potential maximum needed:
             chunk_max = (
-                self.num_big_cycles_chunk * self.num_cooling_cycles * 10
+                self.num_big_cycles_chunk * self.num_cooling_cycles * self.attempts_per_cooling
             )
 
             # Create arrays on the host
